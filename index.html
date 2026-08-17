@@ -1,0 +1,349 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8" />
+<meta name="viewport" content="width=device-width,initial-scale=1" />
+<title>Co-op Shape Herding</title>
+<style>
+  html, body {
+    margin: 0;
+    height: 100%;
+    background: #1f2430;
+    color: white;
+    font-family: Arial, Helvetica, sans-serif;
+    overflow: hidden;
+  }
+  #wrap {
+    height: 100%;
+    display: grid;
+    place-items: center;
+  }
+  canvas {
+    border: 4px solid #fff;
+    border-radius: 14px;
+    box-shadow: 0 12px 35px rgba(0,0,0,.35);
+    max-width: 96vw;
+    max-height: 82vh;
+  }
+  #hud {
+    position: fixed;
+    top: 10px;
+    left: 50%;
+    transform: translateX(-50%);
+    text-align: center;
+    background: rgba(0,0,0,.55);
+    padding: 8px 14px;
+    border-radius: 12px;
+    user-select: none;
+  }
+  #hud b { color: #ffd166; }
+  #help {
+    position: fixed;
+    bottom: 10px;
+    left: 50%;
+    transform: translateX(-50%);
+    background: rgba(0,0,0,.55);
+    padding: 8px 14px;
+    border-radius: 12px;
+    text-align: center;
+    font-size: 14px;
+    user-select: none;
+  }
+</style>
+</head>
+<body>
+<div id="hud">
+  <div><b>Co-op Shape Herding</b> — Level <span id="level">1</span></div>
+  <div>Shapes left: <span id="left">20</span></div>
+</div>
+<div id="wrap"><canvas id="game" width="1000" height="650"></canvas></div>
+<div id="help">
+  Player 1: <b>W/S</b> = up/down, hold <b>A</b> to lift &nbsp; • &nbsp;
+  Player 2: <b>←/→</b> = left/right, hold <b>↑</b> to lift<br>
+  Both lift buttons must be held at the same time. Release either one and the shape drops.
+</div>
+
+<script>
+const canvas = document.getElementById('game');
+const ctx = canvas.getContext('2d');
+const levelEl = document.getElementById('level');
+const leftEl = document.getElementById('left');
+
+const W = canvas.width, H = canvas.height;
+const keys = {};
+let level = 1;
+let shapes = [];
+let carrying = null;
+let gameWon = false;
+let transitionTimer = 0;
+
+const floorColors = ['#f3e5ab','#d9c2f0','#f2c4a7','#d8e8a8','#f2b8c6'];
+const player = { x: W/2, y: H/2, r: 22, speed: 4.2 };
+
+const pens = {
+  circle:   { x: 35,       y: 35,       w: 180, h: 115, color: '#d62828', label: 'RED CIRCLES' },
+  square:   { x: W-215,    y: 35,       w: 180, h: 115, color: '#111111', label: 'BLACK SQUARES' },
+  triangle: { x: 35,       y: H-150,    w: 180, h: 115, color: '#2a9d3f', label: 'GREEN TRIANGLES' },
+  pentagon: { x: W-215,    y: H-150,    w: 180, h: 115, color: '#1976d2', label: 'BLUE PENTAGONS' }
+};
+
+const typeInfo = {
+  circle:   { color:'#d62828' },
+  square:   { color:'#111111' },
+  triangle: { color:'#2a9d3f' },
+  pentagon: { color:'#1976d2' }
+};
+
+function rand(min,max){ return Math.random()*(max-min)+min; }
+
+function pointInAnyPen(x,y,margin=0){
+  return Object.values(pens).some(p =>
+    x > p.x-margin && x < p.x+p.w+margin && y > p.y-margin && y < p.y+p.h+margin
+  );
+}
+
+function spawnLevel(){
+  shapes = [];
+  carrying = null;
+  player.x = W/2; player.y = H/2;
+  gameWon = false;
+  transitionTimer = 0;
+
+  const types = Object.keys(typeInfo);
+  for(const type of types){
+    for(let i=0;i<5;i++){
+      let x,y,tries=0;
+      do {
+        x = rand(240, W-240);
+        y = rand(120, H-120);
+        tries++;
+      } while ((pointInAnyPen(x,y,35) || Math.hypot(x-player.x,y-player.y)<80) && tries<100);
+      shapes.push({type,x,y,size:17,sorted:false});
+    }
+  }
+  updateHud();
+}
+
+function updateHud(){
+  levelEl.textContent = level;
+  leftEl.textContent = shapes.filter(s=>!s.sorted).length;
+}
+
+function drawPen(p){
+  ctx.save();
+  ctx.globalAlpha = .18;
+  ctx.fillStyle = p.color;
+  ctx.fillRect(p.x,p.y,p.w,p.h);
+  ctx.globalAlpha = 1;
+  ctx.lineWidth = 4;
+  ctx.strokeStyle = p.color;
+  ctx.strokeRect(p.x,p.y,p.w,p.h);
+  ctx.fillStyle = p.color === '#111111' ? '#111' : p.color;
+  ctx.font = 'bold 16px Arial';
+  ctx.textAlign='center';
+  ctx.fillText(p.label, p.x+p.w/2, p.y+22);
+  ctx.restore();
+}
+
+function polygon(cx,cy,r,sides,rot=0){
+  ctx.beginPath();
+  for(let i=0;i<sides;i++){
+    const a = rot + i*Math.PI*2/sides;
+    const x = cx + Math.cos(a)*r;
+    const y = cy + Math.sin(a)*r;
+    if(i===0) ctx.moveTo(x,y); else ctx.lineTo(x,y);
+  }
+  ctx.closePath();
+}
+
+function drawShape(s){
+  if(s.sorted) return;
+  ctx.save();
+  ctx.fillStyle = typeInfo[s.type].color;
+  ctx.strokeStyle = 'rgba(255,255,255,.8)';
+  ctx.lineWidth = 2;
+  if(s.type==='circle'){
+    ctx.beginPath(); ctx.arc(s.x,s.y,s.size,0,Math.PI*2); ctx.fill(); ctx.stroke();
+  } else if(s.type==='square'){
+    ctx.fillRect(s.x-s.size,s.y-s.size,s.size*2,s.size*2);
+    ctx.strokeRect(s.x-s.size,s.y-s.size,s.size*2,s.size*2);
+  } else if(s.type==='triangle'){
+    polygon(s.x,s.y,s.size*1.2,3,-Math.PI/2); ctx.fill(); ctx.stroke();
+  } else {
+    polygon(s.x,s.y,s.size*1.15,5,-Math.PI/2); ctx.fill(); ctx.stroke();
+  }
+  ctx.restore();
+}
+
+function drawPlayer(){
+  ctx.save();
+  ctx.translate(player.x,player.y);
+  // cooperative herding character
+  ctx.fillStyle='#6c63ff';
+  ctx.beginPath(); ctx.arc(0,0,player.r,0,Math.PI*2); ctx.fill();
+  ctx.strokeStyle='white'; ctx.lineWidth=3; ctx.stroke();
+  // eyes
+  ctx.fillStyle='white';
+  ctx.beginPath(); ctx.arc(-7,-5,5,0,Math.PI*2); ctx.arc(7,-5,5,0,Math.PI*2); ctx.fill();
+  ctx.fillStyle='#222';
+  ctx.beginPath(); ctx.arc(-7,-5,2,0,Math.PI*2); ctx.arc(7,-5,2,0,Math.PI*2); ctx.fill();
+  // arms / lift indicator
+  const lifting = keys['a'] && keys['arrowup'];
+  ctx.strokeStyle = lifting ? '#ffd166' : 'white';
+  ctx.lineWidth=5;
+  ctx.beginPath();
+  ctx.moveTo(-15,10); ctx.lineTo(-28,0);
+  ctx.moveTo(15,10); ctx.lineTo(28,0);
+  ctx.stroke();
+  ctx.restore();
+}
+
+function nearestShape(maxDist){
+  let best=null, bd=maxDist;
+  for(const s of shapes){
+    if(s.sorted) continue;
+    const d=Math.hypot(s.x-player.x,s.y-player.y);
+    if(d<bd){ best=s; bd=d; }
+  }
+  return best;
+}
+
+function inCorrectPen(s){
+  const p=pens[s.type];
+  return s.x > p.x && s.x < p.x+p.w && s.y > p.y && s.y < p.y+p.h;
+}
+
+function tryDrop(){
+  if(!carrying) return;
+  if(inCorrectPen(carrying)){
+    carrying.sorted=true;
+  }
+  carrying=null;
+  updateHud();
+
+  if(shapes.every(s=>s.sorted)){
+    if(level<3){
+      transitionTimer=90;
+    } else {
+      gameWon=true;
+    }
+  }
+}
+
+function update(){
+  if(gameWon) return;
+
+  // P1 controls vertical movement.
+  if(keys['w']) player.y -= player.speed;
+  if(keys['s']) player.y += player.speed;
+
+  // P2 controls horizontal movement.
+  if(keys['arrowleft']) player.x -= player.speed;
+  if(keys['arrowright']) player.x += player.speed;
+
+  player.x=Math.max(player.r,Math.min(W-player.r,player.x));
+  player.y=Math.max(player.r,Math.min(H-player.r,player.y));
+
+  const bothLift = keys['a'] && keys['arrowup'];
+
+  if(bothLift && !carrying){
+    const n=nearestShape(45);
+    if(n) carrying=n;
+  }
+
+  if(carrying){
+    if(bothLift){
+      carrying.x=player.x;
+      carrying.y=player.y-34;
+    } else {
+      tryDrop();
+    }
+  }
+
+  if(transitionTimer>0){
+    transitionTimer--;
+    if(transitionTimer===0){
+      level++;
+      spawnLevel();
+    }
+  }
+}
+
+function drawShark(){
+  ctx.save();
+  ctx.fillStyle='rgba(255,255,255,.88)';
+  ctx.fillRect(120,110,W-240,H-220);
+  ctx.strokeStyle='#1d3557'; ctx.lineWidth=5; ctx.strokeRect(120,110,W-240,H-220);
+
+  ctx.fillStyle='#1d3557';
+  ctx.font='bold 48px Arial'; ctx.textAlign='center';
+  ctx.fillText('YOU DID IT!',W/2,175);
+
+  ctx.font='150px Arial';
+  ctx.fillText('🦈',W/2,365);
+
+  ctx.font='bold 30px Arial';
+  ctx.fillText('All 3 levels sorted!',W/2,455);
+
+  ctx.font='22px Arial';
+  ctx.fillText('Press R to play again',W/2,505);
+  ctx.restore();
+}
+
+function draw(){
+  ctx.fillStyle=floorColors[level-1] || '#ddd';
+  ctx.fillRect(0,0,W,H);
+
+  for(const p of Object.values(pens)) drawPen(p);
+  for(const s of shapes) drawShape(s);
+
+  drawPlayer();
+
+  if(carrying){
+    ctx.save();
+    ctx.fillStyle='rgba(0,0,0,.65)';
+    ctx.font='bold 16px Arial'; ctx.textAlign='center';
+    ctx.fillText('LIFTING TOGETHER',player.x,player.y-63);
+    ctx.restore();
+  }
+
+  if(transitionTimer>0){
+    ctx.save();
+    ctx.fillStyle='rgba(0,0,0,.55)';
+    ctx.fillRect(0,0,W,H);
+    ctx.fillStyle='white';
+    ctx.font='bold 52px Arial';
+    ctx.textAlign='center';
+    ctx.fillText(`LEVEL ${level} COMPLETE!`,W/2,H/2);
+    ctx.restore();
+  }
+
+  if(gameWon) drawShark();
+}
+
+function loop(){
+  update();
+  draw();
+  requestAnimationFrame(loop);
+}
+
+window.addEventListener('keydown',e=>{
+  const k=e.key.toLowerCase();
+  keys[k]=true;
+  if(['arrowup','arrowleft','arrowright'].includes(k)) e.preventDefault();
+  if(gameWon && k==='r'){
+    level=1;
+    spawnLevel();
+  }
+});
+window.addEventListener('keyup',e=>{
+  const k=e.key.toLowerCase();
+  keys[k]=false;
+  if(['arrowup','arrowleft','arrowright'].includes(k)) e.preventDefault();
+});
+
+spawnLevel();
+loop();
+</script>
+</body>
+</html>
